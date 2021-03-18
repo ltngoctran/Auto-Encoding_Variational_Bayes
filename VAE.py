@@ -191,6 +191,7 @@ class VAE():
         n_images = test_imgs.shape[0]
         #get output images
         output_imgs = np.reshape(self.vae.predict( test_imgs ),(n_images,self.img_rows,self.img_cols,self.img_channels))
+        images = np.where(output_imgs > .5, 1.0, 0.0).astype('float32')
         r = 2
         c = n_images
         fig, axs = plt.subplots(r, c)
@@ -198,7 +199,7 @@ class VAE():
             #black and white images
             axs[0,j].imshow(test_imgs[j, :, :, 0], cmap='gray')
             axs[0,j].axis('off')
-            axs[1,j].imshow(output_imgs[j, :, :, 0], cmap='gray')
+            axs[1,j].imshow(images[j, :, :, 0], cmap='gray')
             axs[1,j].axis('off')
         fig.savefig(image_filename)
         plt.close()
@@ -214,7 +215,9 @@ class VAE():
         for j in range(c):
             x_decoded = np.reshape(self.decoder.predict(z_sample) , (n_images,self.img_rows,self.img_cols,self.img_channels))
             #black and white images
-            axs[j].imshow(x_decoded[j, :, :, 0], cmap='gray')
+            img = x_decoded[j, :, :, 0] 
+            img = np.where(img > .5, 1.0, 0.0).astype('float32')           
+            axs[j].imshow(img, cmap='gray')
             axs[j].axis('off')
         fig.savefig(image_filename)
         plt.close()
@@ -281,7 +284,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-a', type=str, default='MLP', help='architecture_of_network')
     parser.add_argument('-d', type=str, default='mnist', help='dataset_name')
-    parser.add_argument('-n', type=int, default=20000, help='number of iteration')
+    parser.add_argument('-n', type=int, default=10000, help='number of iteration')
     parser.add_argument('-b', type=int, default=128, help=' batch_size')
     parser.add_argument('-s', type=int, default=1000, help='sample_interval')
     args = parser.parse_args()
