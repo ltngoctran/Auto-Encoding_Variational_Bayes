@@ -7,11 +7,14 @@ import tensorflow as tf
 import time
 import os
 import argparse
-from tensorflow.keras.layers import Input, Dropout, Dense, InputLayer, Conv2D, Flatten, Dense, Lambda, Reshape, Conv2DTranspose
+from tensorflow.keras.layers import Input, Activation, Dropout, Dense, InputLayer, Conv2D, Flatten, Dense, Lambda, Reshape, Conv2DTranspose
 from tensorflow.keras.models import  Model
+from tensorflow.keras.optimizers import Adam
+from keras.layers.advanced_activations import LeakyReLU
+
 
 class VAE():
-    def __init__(self,dataset_name):
+    def __init__(self,dataset_name, architecture):
 
         
         X_train, y_train = self.load_data(dataset_name)
@@ -22,59 +25,90 @@ class VAE():
         self.img_shape = (self.img_rows, self.img_cols, self.img_channels)
         self.z_dim = 2
         self.dataset_name = dataset_name
-        # self.X_train = X_train
-        # self.y_train = y_train
 
         # Build and compile the discriminator
-        self.vae = self.build_vae()
+        self.vae = self.build_vae(architecture)
         self.encoder.summary()
         self.decoder.summary()
-    def build_vae(self):
+    def build_vae(self, architecture):
 
         optimizer =  tf.keras.optimizers.Adam(1e-3) #
         n_pixels = self.img_rows*self.img_cols*self.img_channels
 
+        if architecture =='CNN':
+            # print('CNN')
+            #encoder
+            input_img = Input(shape=self.img_shape)
+            x = Conv2D(filters=32, kernel_size=3, strides=2, padding='same', activation='relu')(input_img)
+            x = Conv2D(filters=64, kernel_size=3, strides=2, padding='same', activation='relu')(x)
+            x = Flatten()(x)
+            x = Dense(16, activation='relu')(x)
 
-        #encoder
-        input_img = Input(shape=self.img_shape)
-        x = Conv2D(filters=32, kernel_size=3, strides=2, padding='same', activation='relu')(input_img)
-        x = Conv2D(filters=64, kernel_size=3, strides=2, padding='same', activation='relu')(x)
-        x = Flatten()(x)
-        x = Dense(16, activation='relu')(x)
+            # mean and variance parameters
+            z_mean = Dense(self.z_dim)(x)
+            z_log_var = Dense(self.z_dim)(x)
+
+            #sample the latent vector
+            z_rand = Lambda(self.sampling, output_shape=(self.z_dim,))([z_mean, z_log_var])
+            #save the encoder
+            self.encoder = Model(input_img, [z_mean, z_log_var, z_rand], name='encoder')
+            
+
+            #build decoder
+            latent_inputs = Input(shape=(self.z_dim,), name='z_sampling')
+            y = Dense(units= 7*7*64, activation='relu')(latent_inputs)
+            y = Reshape(target_shape=(7, 7, 64))(y)
+            y = Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same',activation='relu')(y)
+            y = Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same',activation='relu')(y)
+            decoder_outputs = Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same', activation='sigmoid')(y)
+
+            self.decoder = Model(latent_inputs, decoder_outputs, name='decoder')
+
+            #build encoder + decoder (total model)
+            output_img = self.decoder(self.encoder(input_img)[2])
+            vae = Model(input_img, output_img, name='vae_cnn')
+            #define the loss
+            vae_loss = self.vae_loss(input_img, output_img, z_mean, z_log_var)
+            vae.add_loss(vae_loss)
+            vae.compile(optimizer=optimizer)
+            return vae
+
+        else: #self.architecture == 'MLP':s
+            # print('MLP')
+            #encoder
+            input_img = Input(shape=self.img_shape)
+            x = Flatten()(input_img) 
+            x = Dense(512)(x)
+            x = LeakyReLU(alpha=0.2)(x)
+
+            # mean and variance parameters
+            z_mean = Dense(self.z_dim)(x)
+            z_log_var = Dense(self.z_dim)(x)
+
+            #sample the latent vector
+            z_rand = Lambda(self.sampling, output_shape=(self.z_dim,))([z_mean, z_log_var])
+            #save the encoder
+            self.encoder = Model(input_img, [z_mean, z_log_var, z_rand], name='encoder')
+
+            #build decoder
+            latent_inputs = Input(shape=(self.z_dim,), name='z_sampling')
+            y = Dense(512)(latent_inputs)
+            y = LeakyReLU(alpha=0.2)(y)
+            y = Dense(784)(y)
+            y = Activation('sigmoid')(y)
+            decoder_outputs = Reshape(target_shape=self.img_shape)(y)
+
+            self.decoder = Model(latent_inputs, decoder_outputs, name='decoder')
+
+            #build encoder + decoder (total model)
+            output_img = self.decoder(self.encoder(input_img)[2])
+            vae = Model(input_img, output_img, name='vae_mlp')
+            #define the loss
+            vae_loss = self.vae_loss(input_img, output_img, z_mean, z_log_var)
+            vae.add_loss(vae_loss)
+            vae.compile(optimizer=optimizer)
+            return vae
         
-
-
-        # mean and variance parameters
-        z_mean = Dense(self.z_dim)(x)
-        z_log_var = Dense(self.z_dim)(x)
-
-        #sample the latent vector
-        z_rand = Lambda(self.sampling, output_shape=(self.z_dim,))([z_mean, z_log_var])
-        #save the encoder
-        self.encoder = Model(input_img, [z_mean, z_log_var, z_rand], name='encoder')
-        
-
-        #build decoder
-        latent_inputs = Input(shape=(self.z_dim,), name='z_sampling')
-        y = Dense(units= 7*7*64, activation='relu')(latent_inputs)
-        y = Reshape(target_shape=(7, 7, 64))(y)
-        y = Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same',activation='relu')(y)
-        y = Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same',activation='relu')(y)
-        decoder_outputs = Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same')(y)
-
-        self.decoder = Model(latent_inputs, decoder_outputs, name='decoder')
-
-        #build encoder + decoder (total model)
-        output_img = self.decoder(self.encoder(input_img)[2])
-        vae = Model(input_img, output_img, name='vae_cnn')
-
-
-        #define the loss
-        vae_loss = self.vae_loss(input_img, output_img, z_mean, z_log_var)
-        vae.add_loss(vae_loss)
-        vae.compile(optimizer=optimizer)
-
-        return vae
 
     def vae_loss(self, data, reconstruction, z_mean, z_log_var):
         # BEGIN INSERT CODE
@@ -103,7 +137,7 @@ class VAE():
 
     def preprocess_images(self,images):
         images = images.reshape((images.shape[0], 28, 28, 1)) / 255.
-        #images = np.where(images > .5, 1.0, 0.0).astype('float32')
+        images = np.where(images > .5, 1.0, 0.0).astype('float32')
         return images
 
     def load_data(self,dataset_name):
@@ -244,17 +278,17 @@ if __name__ == '__main__':
     if (os.path.isdir('images_vae')==0):
         os.mkdir('images_vae')
 
-    parser = argparse.ArgumentParser(prog='PROG')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-a', type=str, default='MLP', help='architecture_of_network')
     parser.add_argument('-d', type=str, default='mnist', help='dataset_name')
-    parser.add_argument('-n', type=int, default=10000, help='number of iteration')
+    parser.add_argument('-n', type=int, default=20000, help='number of iteration')
     parser.add_argument('-b', type=int, default=128, help=' batch_size')
     parser.add_argument('-s', type=int, default=1000, help='sample_interval')
     args = parser.parse_args()
 
 	
 	#create AE model
-	
-    vae = VAE(args.d)
+    vae = VAE(dataset_name=args.d, architecture=args.a)
     vae.train(n_iters=args.n, batch_size=args.b, sample_interval=args.s)
     if vae.z_dim == 2:
         # PLot latent space
