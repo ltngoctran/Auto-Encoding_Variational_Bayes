@@ -13,7 +13,7 @@ from tensorflow.keras.optimizers import Adam
 from keras.layers.advanced_activations import LeakyReLU
 
 
-class VAE():
+class AE():
     def __init__(self,dataset_name, architecture):
 
         
@@ -23,15 +23,16 @@ class VAE():
         self.img_channels = X_train.shape[3]
         self.img_size = X_train.shape[1] * X_train.shape[2] * X_train.shape[3]
         self.img_shape = (self.img_rows, self.img_cols, self.img_channels)
-        self.z_dim = 5
+        self.z_dim = 2
         self.dataset_name = dataset_name
         self.architecture = architecture
         self.train_loss = []
-        # Build and compile the discriminator
-        self.vae = self.build_vae()
+        self.ae = self.build_ae()
         self.encoder.summary()
         self.decoder.summary()
-    def build_vae(self):
+        self.ae.summary()
+        
+    def build_ae(self):
 
         optimizer =  tf.keras.optimizers.Adam(1e-3) #
         n_pixels = self.img_rows*self.img_cols*self.img_channels
@@ -44,19 +45,13 @@ class VAE():
             x = Conv2D(filters=64, kernel_size=3, strides=2, padding='same', activation='relu')(x)
             x = Flatten()(x)
             #x = Dense(16, activation='relu')(x)
-
-            # mean and variance parameters
-            z_mean = Dense(self.z_dim)(x)
-            z_log_var = Dense(self.z_dim)(x)
-
-            #sample the latent vector
-            z_rand = Lambda(self.sampling, output_shape=(self.z_dim,))([z_mean, z_log_var])
+            z_encoder= Dense(self.z_dim)(x)
             #save the encoder
-            self.encoder = Model(input_img, [z_mean, z_log_var, z_rand], name='encoder')
+            self.encoder = Model(input_img, z_encoder, name='encoder')
             
 
             #build decoder
-            latent_inputs = Input(shape=(self.z_dim,), name='z_sampling')
+            latent_inputs = Input(shape=(self.z_dim,), name='z')
             y = Dense(units= 7*7*64, activation='relu')(latent_inputs)
             y = Reshape(target_shape=(7, 7, 64))(y)
             y = Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same',activation='relu')(y)
@@ -65,76 +60,39 @@ class VAE():
 
             self.decoder = Model(latent_inputs, decoder_outputs, name='decoder')
 
-            #build encoder + decoder (total model)
-            output_img = self.decoder(self.encoder(input_img)[2])
-            vae = Model(input_img, output_img, name='vae_cnn')
-            #define the loss
-            vae_loss = self.vae_loss(input_img, output_img, z_mean, z_log_var)
-            vae.add_loss(vae_loss)
-            vae.compile(optimizer=optimizer)
-            return vae
+
+            output_img = self.decoder(self.encoder(input_img))
+            ae = Model(input_img, output_img, name='ae_cnn')
+            ae.compile(optimizer=optimizer,  loss='binary_crossentropy')
+            return ae
 
         else: #self.architecture == 'MLP':s
             # print('MLP')
-            #encoder
+            # encoder
             input_img = Input(shape=self.img_shape)
             x = Flatten()(input_img) 
             x = Dense(512)(x)
             x = LeakyReLU(alpha=0.2)(x)
-
-            # mean and variance parameters
-            z_mean = Dense(self.z_dim)(x)
-            z_log_var = Dense(self.z_dim)(x)
-
-            #sample the latent vector
-            z_rand = Lambda(self.sampling, output_shape=(self.z_dim,))([z_mean, z_log_var])
-            #save the encoder
-            self.encoder = Model(input_img, [z_mean, z_log_var, z_rand], name='encoder')
+            z_encoder = Dense(self.z_dim)(x)
+            
+            self.encoder = Model(input_img, z_encoder, name='encoder')
 
             #build decoder
-            latent_inputs = Input(shape=(self.z_dim,), name='z_sampling')
+            latent_inputs = Input(shape=(self.z_dim,), name='z')
             y = Dense(512)(latent_inputs)
             y = LeakyReLU(alpha=0.2)(y)
-            y = Dense(784, activation='sigmoid')(y)
+            y = Dense(784,activation='sigmoid')(y)
             decoder_outputs = Reshape(target_shape=self.img_shape)(y)
-
             self.decoder = Model(latent_inputs, decoder_outputs, name='decoder')
 
             #build encoder + decoder (total model)
-            output_img = self.decoder(self.encoder(input_img)[2])
-            vae = Model(input_img, output_img, name='vae_mlp')
-            #define the loss
-            vae_loss = self.vae_loss(input_img, output_img, z_mean, z_log_var)
-            vae.add_loss(vae_loss)
-            vae.compile(optimizer=optimizer)
-            return vae
+            output_img = self.decoder(self.encoder(input_img))
+            ae = Model(input_img, output_img, name='ae_mlp')
+            ae.compile(optimizer=optimizer,  loss='binary_crossentropy')
+            return ae
         
 
-    def vae_loss(self, data, reconstruction, z_mean, z_log_var):
-        # BEGIN INSERT CODE
-
-        # reconstruction loss
-        
-        reconstruction_loss = tf.reduce_mean(
-                tf.reduce_sum(tf.keras.losses.binary_crossentropy(data, reconstruction), axis=(1, 2))
-            )
-        # kl loss
-        kl_loss = -0.5 * (1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var))
-        kl_loss = tf.reduce_mean(tf.reduce_sum(kl_loss, axis=1))
-        # total loss
-        total_loss = reconstruction_loss + kl_loss
-
-
-        return total_loss
-
-    def sampling(self,args):
-        #Reparameterization trick
-        z_mean, z_log_var = args
-        batch_size = tf.shape(z_mean)[0]
-        epsilon = tf.keras.backend.random_normal(shape=(batch_size, self.z_dim)) # create random normal vector
-        z_rand = z_mean + tf.exp(0.5 * z_log_var) * epsilon
-        return z_rand
-
+    
     def preprocess_images(self,images):
         images = images.reshape((images.shape[0], 28, 28, 1)) / 255.
         images = np.where(images > .5, 1.0, 0.0).astype('float32')
@@ -167,31 +125,30 @@ class VAE():
         for i in range(0, n_iters):
 
             # ---------------------
-            #  Train variational autoencoder
+            #  Train autoencoder
             # ---------------------
 
             # Select a random batch of images
             idx = np.random.randint(0, X_train.shape[0], batch_size)
             curr_batch = X_train[idx, :, :, :]
             # Autoencoder training
-            loss = self.vae.train_on_batch(curr_batch, None)
+            loss = self.ae.train_on_batch(curr_batch, curr_batch)
 
             # print the losses
             print("%d [Loss: %f]" % (i, loss))
             self.train_loss.append(loss)
-
             # Save some random generated images and the models at every sample_interval iterations
             if (i % sample_interval == 0):
                 n_images = 5
                 idx = np.random.randint(0, X_train.shape[0], n_images)
                 test_imgs = X_train[idx, :, :, :]
-                self.reconstruct_images(test_imgs,'images_vae/'+self.dataset_name+'_reconstruction_%06d.png' % i)
-                self.sample_images('images_vae/'+self.dataset_name+'_random_samples_%06d.png' % i)
+                self.reconstruct_images(test_imgs,'images_ae/'+self.dataset_name+'_reconstruction_%06d.png' % i)
+                self.sample_images('images_ae/'+self.dataset_name+'_random_samples_%06d.png' % i)
 
     def reconstruct_images(self, test_imgs, image_filename):
         n_images = test_imgs.shape[0]
         #get output images
-        output_imgs = np.reshape(self.vae.predict( test_imgs ),(n_images,self.img_rows,self.img_cols,self.img_channels))
+        output_imgs = np.reshape(self.ae.predict( test_imgs ),(n_images,self.img_rows,self.img_cols,self.img_channels))
         images = np.where(output_imgs > .5, 1.0, 0.0).astype('float32')
         r = 2
         c = n_images
@@ -225,13 +182,13 @@ class VAE():
     def plot_label_clusters(self, data, labels):
         if self.z_dim == 2:
             # display a 2D plot of the digit classes in the latent space
-            z_mean, _, _ = self.encoder.predict(data)
+            z_mean = self.encoder.predict(data)
             plt.figure(figsize=(12, 10))
             plt.scatter(z_mean[:, 0], z_mean[:, 1], c=labels)
             plt.colorbar()
             plt.xlabel("z[0]")
             plt.ylabel("z[1]")
-            plt.savefig('images_vae/label_cluster.png')
+            plt.savefig('images_ae/label_cluster.png')
             # plt.show()
             plt.close()
         else:
@@ -270,7 +227,7 @@ class VAE():
             plt.xlabel("z[0]")
             plt.ylabel("z[1]")
             plt.imshow(figure, cmap="Greys_r")
-            plt.savefig('images_vae/latent_space.png')
+            plt.savefig('images_ae/latent_space.png')
             # plt.show()
             plt.close()
         else:
@@ -282,11 +239,11 @@ if __name__ == '__main__':
     
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-    if (os.path.isdir('images_vae')==0):
-        os.mkdir('images_vae')
+    if (os.path.isdir('images_ae')==0):
+        os.mkdir('images_ae')
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-a', type=str, default='CNN', help='architecture_of_network')
+    parser.add_argument('-a', type=str, default='MLP', help='architecture_of_network')
     parser.add_argument('-d', type=str, default='mnist', help='dataset_name')
     parser.add_argument('-n', type=int, default=20000, help='number of iteration')
     parser.add_argument('-b', type=int, default=128, help=' batch_size')
@@ -295,16 +252,17 @@ if __name__ == '__main__':
 
 	
 	#create AE model
-    vae = VAE(dataset_name=args.d, architecture=args.a)
-    vae.train(n_iters=args.n, batch_size=args.b, sample_interval=args.s)
-    if vae.z_dim == 2:
+    ae = AE(dataset_name=args.d, architecture=args.a)
+    ae.train(n_iters=args.n, batch_size=args.b, sample_interval=args.s)
+    if ae.z_dim == 2:
         # PLot latent space
-        data,labels = vae.load_data(vae.dataset_name)
-        vae.plot_label_clusters(data,labels)
+        data,labels = ae.load_data(ae.dataset_name)
+        ae.plot_label_clusters(data,labels)
         # PLot Mnist manifold
-        vae.plot_latent_space()
+        ae.plot_latent_space()
+    
     plt.figure()
-    plt.plot(range(args.n),vae.train_loss,'-b',label=args.a)
-    plt.legend(loc="upper right")
-    plt.savefig('compare_vae_train_loss.png')
-    plt.close()
+	plt.plot(range(args.n),ae.train_loss,'-b',label='loss')
+	plt.legend(loc="upper right")
+	plt.savefig('compare_ae_train_loss.png')
+	plt.close()
